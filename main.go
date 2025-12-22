@@ -18,8 +18,17 @@ func main() {
 
 	if *command == "" {
 		fmt.Println("Usage: mt -c '<command> [args...]'")
-		fmt.Println("Example: mt -c '/system/resource/print'")
-		fmt.Println("Example: mt -c '/ip/service/set =.id=*0 =address=10.11.13.0/24'")
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  mt -c '/system/resource/print'")
+		fmt.Println("  mt -c '/interface/print'")
+		fmt.Println("  mt -c '/ip/service/set =.id=*0 =address=10.11.13.0/24'")
+		fmt.Println()
+		fmt.Println("Filtering with 'where' (use ? prefix):")
+		fmt.Println("  mt -c '/ip/service/print ?name=api'              # where name = api")
+		fmt.Println("  mt -c '/interface/print ?type=ether'             # where type = ether")
+		fmt.Println("  mt -c '/ip/address/print ?interface=bridge1'     # where interface = bridge1")
+		fmt.Println("  mt -c '/interface/print ?running=true'           # where running = true")
 		os.Exit(1)
 	}
 

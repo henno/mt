@@ -99,8 +99,15 @@ func main() {
 
 	reply, err := client.Run(args...)
 	if err != nil {
+		if strings.Contains(err.Error(), "!empty") {
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if len(reply.Re) == 0 {
+		os.Exit(0)
 	}
 
 	for _, re := range reply.Re {

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/go-routeros/routeros"
@@ -15,8 +16,9 @@ func main() {
 	host := flag.String("h", "", "Mikrotik host address")
 	user := flag.String("u", "", "Username")
 	password := flag.String("p", "", "Password")
-	port := flag.String("P", "", "API port (default: 8728, or 8729 with TLS)")
+	port := flag.String("P", "", "Port (default: 8728 API, 8729 TLS, 22 SSH)")
 	useTLS := flag.Bool("tls", false, "Use TLS connection")
+	useSSH := flag.Bool("ssh", false, "Use SSH connection (CLI mode)")
 	command := flag.String("c", "", "Command to execute")
 	flag.Parse()
 
@@ -27,18 +29,19 @@ func main() {
 		fmt.Println("  -h host    Mikrotik host (or MT_HOST env)")
 		fmt.Println("  -u user    Username (or MT_USER env)")
 		fmt.Println("  -p pass    Password (or MT_PASSWORD env)")
-		fmt.Println("  -P port    API port (default: 8728, or 8729 with -tls)")
-		fmt.Println("  -tls       Use TLS connection")
+		fmt.Println("  -P port    Port (default: 8728 API, 8729 TLS, 22 SSH)")
+		fmt.Println("  -tls       Use TLS connection (API mode)")
+		fmt.Println("  -ssh       Use SSH connection (CLI mode)")
 		fmt.Println("  -c cmd     Command to execute")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  mt -c '/system/resource/print'")
+		fmt.Println("  mt -ssh -c '/system resource print'")
 		fmt.Println("  mt -h 10.11.13.63 -u admin -p secret -c '/interface/print'")
-		fmt.Println("  mt -c '/ip/service/print ?name=api'")
 		fmt.Println()
-		fmt.Println("Filtering (use ? prefix):")
+		fmt.Println("Filtering (API mode uses ? prefix, SSH mode uses 'where'):")
 		fmt.Println("  mt -c '/interface/print ?type=ether'")
-		fmt.Println("  mt -c '/interface/print ?running=true'")
+		fmt.Println("  mt -ssh -c '/interface print where type=ether'")
 		os.Exit(1)
 	}
 
@@ -55,11 +58,11 @@ func main() {
 	if *password == "" {
 		*password = os.Getenv("MT_PASSWORD")
 	}
-	if *port == "" {
-		*port = os.Getenv("MT_PORT")
-	}
 	if !*useTLS && os.Getenv("MT_USE_TLS") == "true" {
 		*useTLS = true
+	}
+	if !*useSSH && os.Getenv("MT_USE_SSH") == "true" {
+		*useSSH = true
 	}
 
 	if *host == "" || *user == "" || *password == "" {
@@ -67,53 +70,99 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set default port based on connection type
+	// Only use MT_PORT from env for API mode, SSH mode defaults to 22
 	if *port == "" {
-		if *useTLS {
+		switch {
+		case *useSSH:
+			*port = "22"
+		case *useTLS:
 			*port = "8729"
-		} else {
-			*port = "8728"
+		default:
+			if envPort := os.Getenv("MT_PORT"); envPort != "" {
+				*port = envPort
+			} else {
+				*port = "8728"
+			}
 		}
 	}
 
-	address := fmt.Sprintf("%s:%s", *host, *port)
-
-	var client *routeros.Client
+	var output string
 	var err error
 
-	if *useTLS {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: true,
-		}
-		client, err = routeros.DialTLS(address, *user, *password, tlsConfig)
+	if *useSSH {
+		output, err = runSSH(*host, *port, *user, *password, *command)
 	} else {
-		client, err = routeros.Dial(address, *user, *password)
+		output, err = runAPI(*host, *port, *user, *password, *useTLS, *command)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: Failed to connect to %s: %v\n", address, err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
-	args := strings.Fields(*command)
-
-	reply, err := client.Run(args...)
-	if err != nil {
-		if strings.Contains(err.Error(), "!empty") {
-			os.Exit(0)
-		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if len(reply.Re) == 0 {
-		os.Exit(0)
+	if output != "" {
+		fmt.Print(output)
+	}
+}
+
+func runAPI(host, port, user, password string, useTLS bool, command string) (string, error) {
+	address := fmt.Sprintf("%s:%s", host, port)
+
+	var client *routeros.Client
+	var err error
+
+	if useTLS {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true,
+		}
+		client, err = routeros.DialTLS(address, user, password, tlsConfig)
+	} else {
+		client, err = routeros.Dial(address, user, password)
 	}
 
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to %s: %v", address, err)
+	}
+	defer client.Close()
+
+	args := strings.Fields(command)
+	reply, err := client.Run(args...)
+	if err != nil {
+		if strings.Contains(err.Error(), "!empty") {
+			return "", nil
+		}
+		return "", err
+	}
+
+	if len(reply.Re) == 0 {
+		return "", nil
+	}
+
+	var buf strings.Builder
 	for _, re := range reply.Re {
 		for _, pair := range re.List {
-			fmt.Printf("%s: %s\n", pair.Key, pair.Value)
+			buf.WriteString(fmt.Sprintf("%s: %s\n", pair.Key, pair.Value))
 		}
-		fmt.Println()
+		buf.WriteString("\n")
 	}
+
+	return buf.String(), nil
+}
+
+func runSSH(host, port, user, password, command string) (string, error) {
+	// Use sshpass + ssh via bash for reliable Mikrotik SSH connectivity
+	sshCmd := fmt.Sprintf("sshpass -p %q ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p %s %s@%s %q",
+		password, port, user, host, command)
+
+	cmd := exec.Command("bash", "-c", sshCmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(output) > 0 {
+			return "", fmt.Errorf("%s", strings.TrimSpace(string(output)))
+		}
+		return "", err
+	}
+
+	return string(output), nil
 }

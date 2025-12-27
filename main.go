@@ -152,7 +152,7 @@ func runAPI(host, port, user, password string, useTLS bool, command string) (str
 
 func runSSH(host, port, user, password, command string) (string, error) {
 	// Use sshpass + ssh via bash for reliable Mikrotik SSH connectivity
-	sshCmd := fmt.Sprintf("sshpass -p %q ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p %s %s@%s %q",
+	sshCmd := fmt.Sprintf("sshpass -p %q ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -p %s %s@%s %q",
 		password, port, user, host, command)
 
 	cmd := exec.Command("bash", "-c", sshCmd)
